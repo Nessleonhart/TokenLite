@@ -1,0 +1,450 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, colorchooser
+from tkinter import font as tkfont
+import traceback
+import datetime
+import re
+import os
+import sys
+
+VERSION = 44
+ERROR_LOG_FILENAME = f"v{VERSION}_error_log.txt"
+
+
+def log_error(exc):
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        log_path = os.path.join(base_dir, ERROR_LOG_FILENAME)
+    except Exception:
+        log_path = ERROR_LOG_FILENAME
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("=" * 60 + "\n")
+            f.write(f"Timestamp: {datetime.datetime.now().isoformat()}\n")
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=f)
+    except Exception:
+        pass
+
+
+def safe_call(func):
+    def wrapper(*a, **kw):
+        try:
+            return func(*a, **kw)
+        except SystemExit:
+            raise
+        except Exception as e:
+            log_error(e)
+            try:
+                messagebox.showerror(
+                    "TokenLite error",
+                    f"An unexpected error occurred. Details were written to {ERROR_LOG_FILENAME}.",
+                )
+            except Exception:
+                pass
+
+    return wrapper
+
+
+COLOR_CYCLE_PALETTE = [
+    "#ff6b6b",
+    "#ffd93b",
+    "#6bff8a",
+    "#4dd9ff",
+    "#6b8bff",
+    "#c86bff",
+    "#ff8bd9",
+    "#ffa56b",
+]
+
+DEFAULT_MONO_COLOR = "#00ff00"
+
+root = None
+text_box = None
+token_var = None
+word_var = None
+char_var = None
+theme_var = None
+mono_color = DEFAULT_MONO_COLOR
+drag_state = {"x": 0, "y": 0}
+
+
+def _hex_to_rgb(h):
+    h = h.lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    try:
+        return tuple(int(h[i : i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return (255, 255, 255)
+
+
+def _rgb_to_hex(r, g, b):
+    return "#{:02x}{:02x}{:02x}".format(
+        max(0, min(255, int(r))),
+        max(0, min(255, int(g))),
+        max(0, min(255, int(b))),
+    )
+
+
+@safe_call
+def update_counts_and_highlight(event=None):
+    if text_box is None:
+        return
+    t = text_box.get("1.0", "end-1c")
+    words = [w for w in t.split() if w.strip()]
+    word_var.set(str(len(words)))
+    char_var.set(str(len(t)))
+    tokens = list(re.finditer(r"\w+|[^\w\s]", t))
+    token_var.set(str(len(tokens)))
+    apply_token_highlight(tokens)
+
+
+def get_active_palette():
+    m = theme_var.get() if theme_var else 1
+    if m == 0:
+        return None
+    if m == 1:
+        return COLOR_CYCLE_PALETTE
+    return [mono_color]
+
+
+def apply_token_highlight(tokens):
+    if text_box is None:
+        return
+
+    for tag in text_box.tag_names():
+        if tag.startswith("token_"):
+            text_box.tag_remove(tag, "1.0", "end")
+
+    pal = get_active_palette()
+    if not pal:
+        return
+
+    mode = theme_var.get()
+    base_r, base_g, base_b = _hex_to_rgb(mono_color)
+    shades = 12
+
+    for idx, m in enumerate(tokens):
+        s = f"1.0+{m.start()}c"
+        e = f"1.0+{m.end()}c"
+        tag = f"token_{idx}"
+
+        if mode == 2:
+            step = idx % shades
+            factor = 1.0 - 0.7 * (step / max(1, shades - 1))
+            color = _rgb_to_hex(base_r * factor, base_g * factor, base_b * factor)
+        else:
+            color = pal[idx % len(pal)]
+
+        text_box.tag_configure(tag, foreground=color)
+        text_box.tag_add(tag, s, e)
+
+
+@safe_call
+def on_theme_change():
+    update_counts_and_highlight()
+
+
+@safe_call
+def on_pick_mono_color():
+    global mono_color
+    c = colorchooser.askcolor(color=mono_color)
+    if c and c[1]:
+        mono_color = c[1]
+    if theme_var.get() == 2:
+        update_counts_and_highlight()
+
+
+def on_title_bar_press(e):
+    drag_state["x"] = e.x
+    drag_state["y"] = e.y
+
+
+def on_title_bar_drag(e):
+    try:
+        root.geometry(f"+{e.x_root - drag_state['x']}+{e.y_root - drag_state['y']}")
+    except Exception as ex:
+        log_error(ex)
+
+
+@safe_call
+def main():
+    global root, text_box, token_var, word_var, char_var, theme_var, mono_color, DEFAULT_MONO_COLOR
+
+    mono_color = DEFAULT_MONO_COLOR
+
+    r = tk.Tk()
+    r.title("TokenLite_v2")
+    r.geometry("900x480")
+    r.minsize(720, 360)
+    r.overrideredirect(True)
+
+    bg = "#0b0c10"
+    title = "#05060a"
+    head = "#0b0c10"
+    fg = "#ffffff"
+    fg2 = "#9ba4b5"
+
+    r.configure(bg=bg)
+    r.columnconfigure(0, weight=1)
+    r.rowconfigure(2, weight=1)
+
+    # Title bar
+    tb = tk.Frame(r, bg=title, padx=12, pady=4)
+    tb.grid(row=0, column=0, sticky="ew")
+    tb.columnconfigure(0, weight=1)
+
+    tf = tkfont.Font(family="Segoe UI Semibold", size=10)
+    lbl = tk.Label(tb, text="TokenLite", bg=title, fg=fg2, font=tf)
+    lbl.grid(row=0, column=0, sticky="w")
+
+    ctrl = tk.Frame(tb, bg=title)
+    ctrl.grid(row=0, column=1)
+
+    def close():
+        r.destroy()
+
+    def mini():
+        r.update_idletasks()
+        r.overrideredirect(False)
+        r.iconify()
+        r.bind(
+            "<Map>",
+            lambda e: (r.overrideredirect(True), r.unbind("<Map>")),
+            add="+",
+        )
+
+    bf = tkfont.Font(family="Segoe UI", size=9)
+    tk.Button(
+        ctrl,
+        text="–",
+        command=mini,
+        bg=title,
+        fg=fg2,
+        bd=0,
+        padx=8,
+        font=bf,
+        highlightthickness=0,
+    ).pack(side="left")
+    tk.Button(
+        ctrl,
+        text="✕",
+        command=close,
+        bg=title,
+        fg=fg2,
+        bd=0,
+        padx=8,
+        font=bf,
+        highlightthickness=0,
+    ).pack(side="left")
+
+    for w in (tb, lbl):
+        w.bind("<Button-1>", on_title_bar_press)
+        w.bind("<B1-Motion>", on_title_bar_drag)
+
+    # Header
+    hd = tk.Frame(r, bg=head, padx=20, pady=12)
+    hd.grid(row=1, column=0, sticky="ew")
+    hd.columnconfigure(0, weight=1)
+
+    big = tkfont.Font(family="Segoe UI Semibold", size=22)
+    small = tkfont.Font(family="Segoe UI", size=11)
+
+    stats = tk.Frame(hd, bg=head)
+    stats.grid(row=0, column=0, sticky="w")
+
+    tk.Label(stats, text="Tokens", bg=head, fg=fg2, font=small).grid(
+        row=0, column=0, padx=32
+    )
+    tk.Label(stats, text="Words", bg=head, fg=fg2, font=small).grid(
+        row=0, column=1, padx=32
+    )
+    tk.Label(stats, text="Characters", bg=head, fg=fg2, font=small).grid(
+        row=0, column=2, padx=32
+    )
+
+    tv = tk.StringVar(value="0")
+    wv = tk.StringVar(value="0")
+    cv = tk.StringVar(value="0")
+
+    tk.Label(stats, textvariable=tv, bg=head, fg=fg, font=big).grid(row=1, column=0)
+    tk.Label(stats, textvariable=wv, bg=head, fg=fg, font=big).grid(row=1, column=1)
+    tk.Label(stats, textvariable=cv, bg=head, fg=fg, font=big).grid(row=1, column=2)
+
+    # Theme selector
+    theme = tk.Frame(hd, bg=head)
+    theme.grid(row=0, column=1, sticky="e")
+    tk.Label(theme, text="Text Color", bg=head, fg=fg2, font=small).grid(
+        row=0, column=0, columnspan=4
+    )
+
+    tvv = tk.IntVar(value=1)
+
+    # Column 0: Color Cycle
+    # Column 1: White
+    # Column 2: Monochrome
+
+    cc_text_widget = tk.Text(
+        theme,
+        height=1,
+        width=len("Color Cycle") + 1,
+        bg=head,
+        fg=fg2,
+        borderwidth=0,
+        highlightthickness=0,
+        padx=0,
+        pady=0,
+        font=("Segoe UI", 9),
+    )
+    cc_text_widget.grid(row=1, column=0, padx=8)
+    cc_text_widget.insert("1.0", "Color Cycle")
+    for i, ch in enumerate("Color Cycle"):
+        if ch == " ":
+            continue
+        tag = f"cc_{i}"
+        color = COLOR_CYCLE_PALETTE[i % len(COLOR_CYCLE_PALETTE)]
+        cc_text_widget.tag_add(tag, f"1.{i}", f"1.{i+1}")
+        cc_text_widget.tag_config(tag, foreground=color)
+    cc_text_widget.configure(state="disabled")
+
+    white_lbl = tk.Label(theme, text="White", bg=head, fg=fg2, font=("Segoe UI", 9))
+    white_lbl.grid(row=1, column=1, padx=8)
+
+    mono_text_widget = tk.Text(
+        theme,
+        height=1,
+        width=len("Monochrome") + 3,
+        bg=head,
+        fg=fg2,
+        borderwidth=0,
+        highlightthickness=0,
+        padx=0,
+        pady=0,
+        font=("Segoe UI", 9),
+    )
+    mono_text_widget.grid(row=1, column=2, padx=8)
+    mono_text_widget.insert("1.0", "Monochrome")
+
+    # Precomputed fixed pattern factors for letters in "Monochrome"
+    MONO_SHADES = [1.0, 0.82, 0.9, 0.78, 0.94, 0.85, 0.88, 0.8, 0.86, 1.0]
+
+    def refresh_mono_text_colors():
+        mono_text_widget.configure(state="normal")
+        for tname in mono_text_widget.tag_names():
+            mono_text_widget.tag_delete(tname)
+
+        text = "Monochrome"
+        base_r, base_g, base_b = _hex_to_rgb(mono_color)
+        indices = [i for i, ch in enumerate(text) if ch != " "]
+
+        if not indices:
+            mono_text_widget.configure(state="disabled")
+            return
+
+        for shade_index, i in enumerate(indices):
+            factor = MONO_SHADES[shade_index % len(MONO_SHADES)]
+            r_c = base_r * factor
+            g_c = base_g * factor
+            b_c = base_b * factor
+            color = _rgb_to_hex(r_c, g_c, b_c)
+            tag = f"mono_{i}"
+            mono_text_widget.tag_add(tag, f"1.{i}", f"1.{i+1}")
+            mono_text_widget.tag_config(tag, foreground=color)
+
+        mono_text_widget.configure(state="disabled")
+
+    refresh_mono_text_colors()
+
+    def refresh_theme_visual():
+        cc_text_widget.grid_configure(pady=(0, 0))
+        white_lbl.grid_configure(pady=(0, 0))
+        mono_text_widget.grid_configure(pady=(0, 0))
+
+        sel = tvv.get()
+        if sel == 0:
+            white_lbl.grid_configure(pady=(2, 0))
+        elif sel == 1:
+            cc_text_widget.grid_configure(pady=(2, 0))
+        elif sel == 2:
+            mono_text_widget.grid_configure(pady=(2, 0))
+
+    def select_theme(v):
+        tvv.set(v)
+        refresh_theme_visual()
+        on_theme_change()
+
+    cc_text_widget.bind("<Button-1>", lambda e: select_theme(1))
+    white_lbl.bind("<Button-1>", lambda e: select_theme(0))
+    mono_text_widget.bind("<Button-1>", lambda e: select_theme(2))
+
+    def pick_mono_and_refresh():
+        on_pick_mono_color()
+        refresh_mono_text_colors()
+
+    tk.Button(
+        theme,
+        text="🎨",
+        command=pick_mono_and_refresh,
+        bg="#20232a",
+        fg=fg2,
+        activebackground="#262a33",
+        activeforeground=fg,
+        bd=0,
+        padx=8,
+        pady=2,
+        font=("Segoe UI", 10),
+        highlightthickness=0,
+        relief="flat",
+    ).grid(row=1, column=3, padx=8)
+
+    mf = tk.Frame(r, bg=bg, padx=16, pady=12)
+    mf.grid(row=2, column=0, sticky="nsew")
+    mf.columnconfigure(0, weight=1)
+    mf.rowconfigure(0, weight=1)
+
+    t = tk.Text(
+        mf,
+        wrap="word",
+        bg="#15171e",
+        fg=fg,
+        insertbackground=fg,
+        relief="flat",
+        padx=10,
+        pady=10,
+        font=("Segoe UI", 11),
+    )
+    t.grid(row=0, column=0, sticky="nsew")
+
+    sc = ttk.Scrollbar(mf, orient="vertical", command=t.yview)
+    sc.grid(row=0, column=1, sticky="ns")
+    t.configure(yscrollcommand=sc.set)
+
+    t.bind("<KeyRelease>", update_counts_and_highlight)
+    t.bind("<<Paste>>", update_counts_and_highlight)
+    t.bind("<<Cut>>", update_counts_and_highlight)
+
+    globals().update(
+        root=r,
+        text_box=t,
+        token_var=tv,
+        word_var=wv,
+        char_var=cv,
+        theme_var=tvv,
+    )
+
+    refresh_theme_visual()
+    update_counts_and_highlight()
+
+    try:
+        r.mainloop()
+    except Exception as e:
+        log_error(e)
+        raise
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        log_error(e)
+        sys.exit(1)
